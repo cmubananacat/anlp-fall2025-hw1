@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+.venv/
+
+*.pt
+*.model
+*.done
+*.txt
+
+*.log
+logs/
+data/

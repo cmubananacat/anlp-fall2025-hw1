@@ -31,36 +31,56 @@ class AdamW(Optimizer):
         if closure is not None:
             loss = closure()
 
-        for group in self.param_groups:
+        with torch.no_grad():
+            for group in self.param_groups:
 
-            # TODO: Clip gradients if max_grad_norm is set
-            if group['max_grad_norm'] is not None:
-                raise NotImplementedError()
-            
-            for p in group["params"]:
-                if p.grad is None:
-                    continue
-                grad = p.grad.data
-                if grad.is_sparse:
-                    raise RuntimeError("Adam does not support sparse gradients, please consider SparseAdam instead")
+                # TODO: Clip gradients if max_grad_norm is set
+                if group['max_grad_norm'] is not None:
+                    torch.nn.utils.clip_grad_norm_(group["params"], group["max_grad_norm"])
+                
+                for p in group["params"]:
+                    if p.grad is None:
+                        continue
+                    grad = p.grad.data
+                    if grad.is_sparse:
+                        raise RuntimeError("Adam does not support sparse gradients, please consider SparseAdam instead")
 
-                raise NotImplementedError()
+                    # State should be stored in this dictionary
+                    state = self.state[p]
+                    if len(state) == 0:
+                        state["t"] = 0
+                        state["m"] = torch.zeros_like(p)
+                        state["v"] = torch.zeros_like(p)
 
-                # State should be stored in this dictionary
-                state = self.state[p]
+                    # TODO: Access hyperparameters from the `group` dictionary
+                    lr = group["lr"]
+                    beta1, beta2 = group["betas"]
+                    eps = group["eps"]
+                    weight_decay = group["weight_decay"]
+                    correct_bias = group["correct_bias"]
 
-                # TODO: Access hyperparameters from the `group` dictionary
-                alpha = group["lr"]
+                    # TODO: Update first and second moments of the gradients
+                    state["t"] += 1
+                    t = state["t"]
+                    p_t_minus_1 = p.data
+                    m_hat = m = state["m"]
+                    v_hat = v = state["v"]
+                    m.data = beta1 * m + (1 - beta1) * grad
+                    v.data = beta2 * v + (1 - beta2) * grad ** 2
 
-                # TODO: Update first and second moments of the gradients
+                    # TODO: Bias correction
+                    # Please note that we are using the "efficient version" given in Algorithm 2 
+                    # https://arxiv.org/pdf/1711.05101
+                    if correct_bias:
+                        m_hat = m / (1 - beta1 ** t)
+                        v_hat = v / (1 - beta2 ** t)
 
-                # TODO: Bias correction
-                # Please note that we are using the "efficient version" given in Algorithm 2 
-                # https://arxiv.org/pdf/1711.05101
+                    # TODO: Update parameters
+                    p.data -= lr * m_hat / (torch.sqrt(v_hat) + eps)
 
-                # TODO: Update parameters
-
-                # TODO: Add weight decay after the main gradient-based updates.
-                # Please note that the learning rate should be incorporated into this update.
+                    # TODO: Add weight decay after the main gradient-based updates.
+                    # Please note that the learning rate should be incorporated into this update.
+                    if weight_decay != 0:
+                        p.data -= lr * (weight_decay * p_t_minus_1)
 
         return loss

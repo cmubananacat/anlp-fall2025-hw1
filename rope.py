@@ -64,12 +64,33 @@ def apply_rotary_emb(
     # First, compute the trigonometric values in the second and fourth columns in
     # slide 49 (linked above).
 
+    # Referenced https://github.com/karpathy/llama2.c/blob/master/model.py
+    # as mentioned in Piazza post
+    # half_d = head_dim // 2
+    pair_indices = torch.arange(0, head_dim, 2, device=device, dtype=torch.float32)
+    freqs = theta ** (- pair_indices / head_dim)
+    t = torch.arange(seqlen, device=device, dtype=torch.float32)  # Token positions
+    freqs = torch.outer(t, freqs).float()  # (seqlen, d/2)
+    # ^ each entry (t, i) is the rotation angle for token pos t & pair index i (t . w_i)
+    freqs_cos = torch.cos(freqs)
+    freqs_sin = torch.sin(freqs)
+
     # Then, combine these trigonometric values with the tensors query_real, query_imag,
     # key_real, and key_imag.
+    freqs_cos = reshape_for_broadcast(freqs_cos, query_real)
+    freqs_sin = reshape_for_broadcast(freqs_sin, query_real)
 
-    raise NotImplementedError
+    query_out_r = query_real * freqs_cos - query_imag * freqs_sin
+    # print(f"shape: {query_out_r.shape}")
+    # (1, 2, 2, 2)
+    query_out_i = query_imag * freqs_cos + query_real * freqs_sin
+    key_out_r = key_real * freqs_cos - key_imag * freqs_sin
+    key_out_i = key_imag * freqs_cos + key_real * freqs_sin
 
-    query_out = None
-    key_out = None
+    # stack: (bs, seqlen, num_heads, d/2, 2)
+    # last dim: 0 = real, 1 = imag
+    # flatten(3) : from dim 3 onwards flatten everyth to 1 dim
+    query_out = torch.stack([query_out_r, query_out_i], dim=-1).flatten(3)  # (bs, seqlen, num_heads, d)
+    key_out = torch.stack([key_out_r, key_out_i], dim=-1).flatten(3)
     # Return the rotary position embeddings for the query and key tensors
     return query_out, key_out
