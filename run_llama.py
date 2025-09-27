@@ -498,7 +498,7 @@ def get_args():
 						default=2e-5)
 
 	# new pretraining
-	parser.add_argument("--pretrain", action="store_true" help="pretrain with TAPT")
+	parser.add_argument("--pretrain", action="store_true", help="pretrain with TAPT")
 
 	args = parser.parse_args()
 	print(f"args: {vars(args)}")
