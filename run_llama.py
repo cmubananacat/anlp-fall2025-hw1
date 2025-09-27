@@ -67,6 +67,29 @@ class LlamaDataset(Dataset):
 		return batched_data
 
 
+class TAPTDataset(Dataset):
+	def __init__(self, dataset_path, args, seqlen):
+		self.seqlen = seqlen
+		self.tokenizer = Tokenizer(max_len=args.max_sentence_len)
+		all_tokens = []
+		with open(dataset_path, 'r') as fp:
+			for line in fp:
+				sent = line.strip()
+				tokens = self.tokenizer.encode(sent, bos=True, eos=True)
+				all_tokens.extend(tokens)
+		self.tokens = torch.tensor(all_tokens, dtype=torch.long)
+		self.n = (len(self.tokens) - 1) // seqlen
+
+	def __len__(self):
+		return self.n
+
+	def __getitem__(self, idx):
+		i = idx * self.seqlen
+		x = self.tokens[i : i + self.seqlen]
+		y = self.tokens[i + 1 : i + 1 + self.seqlen]
+		return x, y
+
+
 # create the data which is a list of (sentence, label, token for the labels)
 def create_data(filename, tokenizer: Tokenizer, flag: str ='train', lower: bool = False, eos: bool = True, prompt_suffix: Optional[str]=None):
 	# specify the tokenizer
@@ -116,6 +139,51 @@ def model_eval(dataloader, model, device):
 	acc = accuracy_score(y_true, y_pred)
 
 	return acc, f1, y_pred, y_true, sents
+
+
+def pretrain(args):
+	device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
+
+	# hardcoded for now
+	dataset_path = "data/tapt.txt"
+	seqlen = 256
+	epochs = 1
+	bs = 16
+	lr = 1e-4
+	save_path = args.pretrained_model_path.replace(".pt", "_tapt.pt")
+
+	dataset = TAPTDataset(dataset_path, args, seqlen)
+	dataloader = DataLoader(dataset, batch_size=bs, shuffle=True, drop_last=True)
+
+	model = load_pretrained(args.pretrained_model_path).to(device)
+	optimizer = AdamW(model.parameters(), lr=lr)
+	pad_id = dataset.tokenizer.pad_id
+
+	for epoch in range(epochs):
+		model.train()
+		train_loss = 0
+		num_batches = 0
+		for x, y in tqdm(dataloader, desc=f"pretrain-{epoch}", disable=TQDM_DISABLE):
+			x, y = x.to(device), y.to(device)
+			optimizer.zero_grad()
+			logits = model(x)
+			B, T, V = logits.shape
+			loss = F.cross_entropy(logits.reshape(B*T, V),
+								   y.reshape(B*T),
+								   ignore_index=pad_id,
+								   reduction='mean')
+
+			loss.backward()
+			optimizer.step()
+
+			train_loss += loss.item()
+			num_batches += 1
+
+		print(f"epoch {epoch}: avg train loss :: {train_loss / num_batches:.3f}")
+
+	torch.save({"model_state_dict": model.state_dict()}, save_path)
+	print(f"Saved TAPT model to {save_path}")
+	args.pretrained_model_path = save_path
 
 def save_model(model, optimizer, args, config, filepath):
 	save_info = {
@@ -371,10 +439,10 @@ def test_with_prompting(args):
 		write_predictions_to_file("test", args.test_out, test_acc, test_pred, test_sents)
 
 def test(args):
-    assert args.dev_out.endswith("dev-finetuning-output.txt") or args.dev_out.endswith("dev-lora-output.txt"), \
-        'For saving results, please set the dev_out argument as "<dataset>-dev-finetuning-output.txt" or "<dataset>-dev-lora-output.txt"'
-    assert args.test_out.endswith("test-finetuning-output.txt") or args.test_out.endswith("test-lora-output.txt"), \
-        'For saving results, please set the test_out argument as "<dataset>-test-finetuning-output.txt" or "<dataset>-test-lora-output.txt"'
+    # assert args.dev_out.endswith("dev-finetuning-output.txt") or args.dev_out.endswith("dev-lora-output.txt"), \
+    #     'For saving results, please set the dev_out argument as "<dataset>-dev-finetuning-output.txt" or "<dataset>-dev-lora-output.txt"'
+    # assert args.test_out.endswith("test-finetuning-output.txt") or args.test_out.endswith("test-lora-output.txt"), \
+    #     'For saving results, please set the test_out argument as "<dataset>-test-finetuning-output.txt" or "<dataset>-test-lora-output.txt"'
     
     with torch.no_grad():
         device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
@@ -429,6 +497,9 @@ def get_args():
 	parser.add_argument("--lr", type=float, help="learning rate, default lr for 'pretrain': 1e-3, 'finetune': 1e-5",
 						default=2e-5)
 
+	# new pretraining
+	parser.add_argument("--pretrain", action="store_true" help="pretrain with TAPT")
+
 	args = parser.parse_args()
 	print(f"args: {vars(args)}")
 	return args
@@ -437,6 +508,9 @@ if __name__ == "__main__":
 	args = get_args()
 	args.filepath = f'{args.option}-{args.epochs}-{args.lr}.pt' # save path
 	seed_everything(args.seed)  # fix the seed for reproducibility
+
+	if args.pretrain:
+		pretrain(args)
 
 	if args.option == "generate":
 		# Step 1
@@ -465,5 +539,6 @@ if __name__ == "__main__":
 		# Step 6
 		# Evaluate your LoRA model on the dev and test sets
 		test(args)
+
 	else:
 		raise ValueError(f"Invalid option: {args.option}")
